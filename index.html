@@ -75,16 +75,53 @@
     .rotate-note { display: none; color: #ffe066; margin-top: 8px; font-size: 13px; }
 
     @media (hover: none) and (pointer: coarse) and (orientation: landscape) {
-      body { align-items: flex-start; padding-top: 4px; }
-      .title, .help { display: none; }
+      body { align-items: center; padding: 0; overflow: hidden; }
+      .title, .help, .rotate-note { display: none; }
+      .wrap {
+        width: 100vw;
+        height: 100vh;
+        display: grid;
+        grid-template-columns: 150px 1fr 150px;
+        grid-template-rows: 64px 1fr;
+        grid-template-areas:
+          "left game start"
+          "left game ab";
+        align-items: center;
+        justify-items: center;
+        column-gap: 4px;
+      }
       canvas {
+        grid-area: game;
         width: auto;
-        height: calc(100vh - 96px);
-        max-width: 96vw;
-        max-height: calc(100vh - 96px);
+        height: min(96vh, calc(100vw * 0.60));
+        max-width: calc(100vw - 312px);
+        max-height: 96vh;
         border-width: 4px;
       }
-      .touch-pad { display: grid; }
+      .touch-pad { display: contents; }
+      .dpad {
+        grid-area: left;
+        width: 138px;
+        height: 138px;
+        grid-template-columns: 44px 44px 44px;
+        grid-template-rows: 44px 44px 44px;
+        gap: 3px;
+        touch-action: none;
+      }
+      .start-area {
+        grid-area: start;
+        align-self: end;
+        justify-self: center;
+      }
+      .start-btn { width: 100px; height: 38px; }
+      .ab {
+        grid-area: ab;
+        align-self: start;
+        justify-self: center;
+        justify-content: center;
+        gap: 14px;
+      }
+      .ab .touch-btn { width: 62px; height: 62px; }
     }
 
     @media (hover: none) and (pointer: coarse) and (orientation: portrait) {
@@ -231,7 +268,44 @@
   const touch = { up:false, down:false, left:false, right:false, a:false, b:false, start:false };
 
   function setupTouchControls() {
-    document.querySelectorAll('[data-touch]').forEach(btn => {
+    const clearDpad = () => {
+      touch.up = touch.down = touch.left = touch.right = false;
+      document.querySelectorAll('.dpad .touch-btn').forEach(b => b.classList.remove('on'));
+    };
+
+    const updateDpad = (e, dpad) => {
+      e.preventDefault();
+      initAudio();
+      const r = dpad.getBoundingClientRect();
+      const x = e.clientX - r.left;
+      const y = e.clientY - r.top;
+      const cx = r.width / 2;
+      const cy = r.height / 2;
+      const dead = 12;
+
+      touch.left = x < cx - dead;
+      touch.right = x > cx + dead;
+      touch.up = y < cy - dead;
+      touch.down = y > cy + dead;
+
+      document.querySelector('[data-touch="left"]').classList.toggle('on', touch.left);
+      document.querySelector('[data-touch="right"]').classList.toggle('on', touch.right);
+      document.querySelector('[data-touch="up"]').classList.toggle('on', touch.up);
+      document.querySelector('[data-touch="down"]').classList.toggle('on', touch.down);
+    };
+
+    const dpad = document.querySelector('.dpad');
+    if (dpad) {
+      dpad.addEventListener('pointerdown', e => {
+        dpad.setPointerCapture(e.pointerId);
+        updateDpad(e, dpad);
+      });
+      dpad.addEventListener('pointermove', e => updateDpad(e, dpad));
+      dpad.addEventListener('pointerup', e => { e.preventDefault(); clearDpad(); });
+      dpad.addEventListener('pointercancel', e => { e.preventDefault(); clearDpad(); });
+    }
+
+    document.querySelectorAll('[data-touch="a"], [data-touch="b"], [data-touch="start"]').forEach(btn => {
       const name = btn.dataset.touch;
       const on = e => {
         e.preventDefault();
