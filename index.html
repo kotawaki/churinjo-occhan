@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>駐輪場のおっちゃん</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #101018;
+      color: #f8f8f8;
+      font-family: monospace;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      user-select: none;
+    }
+    .wrap { text-align: center; }
+    canvas {
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      width: 768px;
+      height: 576px;
+      max-width: 96vw;
+      max-height: 72vw;
+      border: 6px solid #e8e8e8;
+      background: #202838;
+      box-shadow: 0 0 0 6px #303040, 0 14px 30px rgba(0,0,0,.45);
+    }
+    .help {
+      margin-top: 12px;
+      color: #d8d8d8;
+      line-height: 1.7;
+      font-size: 14px;
+    }
+    .title { font-size: 20px; margin-bottom: 10px; color: #ffe066; }
+  
+    .touch-pad {
+      display: none;
+      width: 96vw;
+      max-width: 768px;
+      margin: 10px auto 0;
+      grid-template-columns: 130px 1fr 150px;
+      gap: 10px;
+      align-items: center;
+    }
+    .dpad {
+      display: grid;
+      grid-template-columns: 42px 42px 42px;
+      grid-template-rows: 42px 42px 42px;
+      gap: 2px;
+    }
+    .touch-btn {
+      border: 3px solid #e8e8e8;
+      background: #303040;
+      color: #fff;
+      font-family: monospace;
+      font-weight: bold;
+      font-size: 16px;
+      border-radius: 8px;
+      touch-action: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .touch-btn:active, .touch-btn.on { background: #606080; }
+    .up { grid-column: 2; grid-row: 1; }
+    .left { grid-column: 1; grid-row: 2; }
+    .right { grid-column: 3; grid-row: 2; }
+    .down { grid-column: 2; grid-row: 3; }
+    .start-area { display: flex; justify-content: center; }
+    .start-btn { width: 96px; height: 38px; font-size: 13px; }
+    .ab { display: flex; justify-content: flex-end; gap: 12px; }
+    .ab .touch-btn { width: 58px; height: 58px; border-radius: 50%; }
+    .rotate-note { display: none; color: #ffe066; margin-top: 8px; font-size: 13px; }
+
+    @media (hover: none) and (pointer: coarse) and (orientation: landscape) {
+      body { align-items: flex-start; padding-top: 4px; }
+      .title, .help { display: none; }
+      canvas {
+        width: auto;
+        height: calc(100vh - 96px);
+        max-width: 96vw;
+        max-height: calc(100vh - 96px);
+        border-width: 4px;
+      }
+      .touch-pad { display: grid; }
+    }
+
+    @media (hover: none) and (pointer: coarse) and (orientation: portrait) {
+      canvas { width: 96vw; height: auto; max-height: 70vh; }
+      .help { display: none; }
+      .rotate-note { display: block; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="title">駐輪場のおっちゃん</div>
+    <canvas id="game" width="256" height="192"></canvas>
+    <div class="touch-pad" id="touchPad">
+      <div class="dpad">
+        <button class="touch-btn up" data-touch="up">▲</button>
+        <button class="touch-btn left" data-touch="left">◀</button>
+        <button class="touch-btn right" data-touch="right">▶</button>
+        <button class="touch-btn down" data-touch="down">▼</button>
+      </div>
+      <div class="start-area">
+        <button class="touch-btn start-btn" data-touch="start">START</button>
+      </div>
+      <div class="ab">
+        <button class="touch-btn" data-touch="b">B<br><small>走る</small></button>
+        <button class="touch-btn" data-touch="a">A<br><small>取る</small></button>
+      </div>
+    </div>
+    <div class="rotate-note">スマホでは横向きにするとタッチ操作で遊べます。</div>
+    <div class="help">
+      矢印キー：移動　Z：取る／渡す　X：ダッシュ　Enter：スタート／リトライ<br>
+      コントローラー：十字キー／左スティック：移動　A：取る／渡す　B：ダッシュ　START：開始<br>
+      スマホ横向き：画面下の十字キー／A／B／STARTで操作
+    </div>
+  </div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+
+  const W = canvas.width;
+  const H = canvas.height;
+  const keys = {};
+  const SCORE_KEY = 'churinjo_occhan_high_score';
+  const LAST_KEY = 'churinjo_occhan_last_scores';
+
+  function loadHighScore() {
+    return Number(localStorage.getItem(SCORE_KEY) || 0);
+  }
+
+  function saveScore(score) {
+    const high = loadHighScore();
+    if (score > high) localStorage.setItem(SCORE_KEY, String(score));
+
+    const list = JSON.parse(localStorage.getItem(LAST_KEY) || '[]');
+    list.unshift({ score, date: new Date().toLocaleString('ja-JP') });
+    localStorage.setItem(LAST_KEY, JSON.stringify(list.slice(0, 5)));
+  }
+
+  function loadLastScores() {
+    try { return JSON.parse(localStorage.getItem(LAST_KEY) || '[]'); }
+    catch { return []; }
+  }
+
+  const bikeRows = [
+    { y: 54, nums: [34,35,36,37,38,39,40,41] },
+    { y: 82, nums: [42,43,44,45,46,47,48,49] },
+    { y: 110, nums: [50,51,52,53,54,55,56,57] },
+    { y: 138, nums: [58,59,60,61,62,63,64,65] },
+  ];
+
+  const bikes = [];
+  bikeRows.forEach(row => {
+    row.nums.forEach((n, i) => {
+      bikes.push({ num: n, x: 22 + i * 27, y: row.y, taken: false });
+    });
+  });
+
+  const startState = () => ({
+    mode: 'title',
+    time: 60,
+    score: 0,
+    highScore: loadHighScore(),
+    miss: 0,
+    served: 0,
+    message: 'ENTERで開始',
+    messageTimer: 0,
+    player: { x: 126, y: 166, w: 10, h: 14, hold: null, dir: 1 },
+    customer: null,
+    nextCustomerTimer: 0,
+    lastTime: performance.now(),
+  });
+
+  let state = startState();
+  let zLock = false;
+  let enterLock = false;
+  let audioReady = false;
+  let audioCtx = null;
+
+  function initAudio() {
+    if (audioReady) return;
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      audioReady = true;
+    } catch (e) {
+      audioReady = false;
+    }
+  }
+
+  function beep(freq = 440, duration = 0.08, type = 'square', volume = 0.16) {
+    if (!audioReady || !audioCtx) return;
+    const now = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, now);
+    gain.gain.setValueAtTime(volume, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(now);
+    osc.stop(now + duration);
+  }
+
+  function sound(name) {
+    if (name === 'start') {
+      beep(330, .07); setTimeout(() => beep(440, .07), 80); setTimeout(() => beep(660, .11), 160);
+    } else if (name === 'pickup') {
+      beep(620, .06);
+    } else if (name === 'drop') {
+      beep(260, .06);
+    } else if (name === 'ok') {
+      beep(520, .06); setTimeout(() => beep(780, .09), 70);
+    } else if (name === 'miss') {
+      beep(180, .12, 'sawtooth', .18); setTimeout(() => beep(120, .14, 'sawtooth', .18), 110);
+    } else if (name === 'gameover') {
+      beep(330, .12); setTimeout(() => beep(250, .12), 130); setTimeout(() => beep(180, .2), 260);
+    }
+  }
+
+  const pad = { up:false, down:false, left:false, right:false, a:false, b:false, start:false };
+  const touch = { up:false, down:false, left:false, right:false, a:false, b:false, start:false };
+
+  function setupTouchControls() {
+    document.querySelectorAll('[data-touch]').forEach(btn => {
+      const name = btn.dataset.touch;
+      const on = e => {
+        e.preventDefault();
+        initAudio();
+        touch[name] = true;
+        btn.classList.add('on');
+      };
+      const off = e => {
+        e.preventDefault();
+        touch[name] = false;
+        btn.classList.remove('on');
+      };
+      btn.addEventListener('pointerdown', on);
+      btn.addEventListener('pointerup', off);
+      btn.addEventListener('pointercancel', off);
+      btn.addEventListener('pointerleave', off);
+    });
+  }
+
+  function pollGamepad() {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const gp = pads && Array.from(pads).find(p => p);
+    if (!gp) {
+      pad.up = pad.down = pad.left = pad.right = pad.a = pad.b = pad.start = false;
+      return;
+    }
+
+    const ax0 = gp.axes[0] || 0;
+    const ax1 = gp.axes[1] || 0;
+    const pressed = i => !!(gp.buttons[i] && gp.buttons[i].pressed);
+
+    pad.left = ax0 < -0.35 || pressed(14);
+    pad.right = ax0 > 0.35 || pressed(15);
+    pad.up = ax1 < -0.35 || pressed(12);
+    pad.down = ax1 > 0.35 || pressed(13);
+    pad.a = pressed(0);
+    pad.b = pressed(1);
+    pad.start = pressed(9) || pressed(7);
+  }
+
+  function resetBikes() {
+    bikes.forEach(b => b.taken = false);
+  }
+
+  function randomBikeNum() {
+    const available = bikes.filter(b => !b.taken);
+    if (!available.length) return 34 + Math.floor(Math.random() * 32);
+    return available[Math.floor(Math.random() * available.length)].num;
+  }
+
+  function spawnCustomer() {
+    const types = [
+      { name: 'おばちゃん', patience: 13, bonus: 80 },
+      { name: '会社員', patience: 9, bonus: 120 },
+      { name: '学生', patience: 11, bonus: 100 },
+      { name: '常連', patience: 16, bonus: 70 },
+    ];
+    const t = types[Math.floor(Math.random() * types.length)];
+    state.customer = {
+      x: 116,
+      y: 22,
+      want: randomBikeNum(),
+      patience: t.patience,
+      maxPatience: t.patience,
+      name: t.name,
+      bonus: t.bonus,
+    };
+  }
+
+  function restart() {
+    initAudio();
+    sound('start');
+    resetBikes();
+    state = startState();
+    state.mode = 'play';
+    state.message = 'いらっしゃい！';
+    state.messageTimer = 1.2;
+    spawnCustomer();
+  }
+
+  function rects(a, b) {
+    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+  }
+
+  function nearBike() {
+    const p = state.player;
+    let best = null;
+    let bestD = 999;
+    for (const b of bikes) {
+      if (b.taken) continue;
+      const dx = (p.x + p.w/2) - (b.x + 8);
+      const dy = (p.y + p.h/2) - (b.y + 7);
+      const d = Math.sqrt(dx*dx + dy*dy);
+      if (d < 15 && d < bestD) { best = b; bestD = d; }
+    }
+    return best;
+  }
+
+  function atCounter() {
+    const p = state.player;
+    return p.x > 94 && p.x < 150 && p.y < 42;
+  }
+
+  function action() {
+    if (state.mode !== 'play') return;
+    const p = state.player;
+    if (p.hold) {
+      if (atCounter() && state.customer) {
+        if (p.hold.num === state.customer.want) {
+          const patienceBonus = Math.floor(state.customer.patience * 10);
+          state.score += state.customer.bonus + patienceBonus;
+          state.served++;
+          sound('ok');
+          state.message = 'まいど！ +' + (state.customer.bonus + patienceBonus);
+          state.messageTimer = 1.0;
+          state.customer = null;
+          state.nextCustomerTimer = 0.8;
+        } else {
+          state.score = Math.max(0, state.score - 50);
+          state.miss++;
+          sound('miss');
+          state.message = '番号ちゃうで！ -50';
+          state.messageTimer = 1.0;
+          p.hold.taken = false;
+        }
+        p.hold = null;
+      } else {
+        p.hold.taken = false;
+        p.hold = null;
+        sound('drop');
+        state.message = '自転車を戻した';
+        state.messageTimer = .7;
+      }
+    } else {
+      const b = nearBike();
+      if (b) {
+        b.taken = true;
+        p.hold = b;
+        sound('pickup');
+        state.message = b.num + '番を取った';
+        state.messageTimer = .7;
+      }
+    }
+  }
+
+  function update(dt) {
+    if ((keys.Enter || pad.start || touch.start) && !enterLock) {
+      enterLock = true;
+      if (state.mode === 'title' || state.mode === 'gameover') restart();
+    }
+    if (!keys.Enter && !pad.start && !touch.start) enterLock = false;
+
+    if (state.mode !== 'play') return;
+
+    state.time -= dt;
+    if (state.time <= 0) {
+      state.time = 0;
+      saveScore(state.score);
+      state.highScore = loadHighScore();
+      state.mode = 'gameover';
+      sound('gameover');
+      state.message = 'おつかれさまでした';
+      return;
+    }
+
+    if (state.messageTimer > 0) state.messageTimer -= dt;
+
+    if (!state.customer) {
+      state.nextCustomerTimer -= dt;
+      if (state.nextCustomerTimer <= 0) spawnCustomer();
+    } else {
+      state.customer.patience -= dt;
+      if (state.customer.patience <= 0) {
+        state.score = Math.max(0, state.score - 80);
+        state.miss++;
+        sound('miss');
+        state.message = state.customer.name + 'が怒って帰った…';
+        state.messageTimer = 1.2;
+        state.customer = null;
+        state.nextCustomerTimer = 1.0;
+      }
+    }
+
+    const p = state.player;
+    let sp = keys.x || keys.X || pad.b || touch.b ? 76 : 48;
+    if (p.hold) sp *= 0.82;
+    let vx = 0, vy = 0;
+    if (keys.ArrowLeft || pad.left || touch.left) vx--;
+    if (keys.ArrowRight || pad.right || touch.right) vx++;
+    if (keys.ArrowUp || pad.up || touch.up) vy--;
+    if (keys.ArrowDown || pad.down || touch.down) vy++;
+    if (vx || vy) {
+      const len = Math.sqrt(vx*vx + vy*vy);
+      vx /= len; vy /= len;
+      p.x += vx * sp * dt;
+      p.y += vy * sp * dt;
+      if (vx !== 0) p.dir = vx > 0 ? 1 : -1;
+    }
+    p.x = Math.max(4, Math.min(W - p.w - 4, p.x));
+    p.y = Math.max(34, Math.min(H - p.h - 6, p.y));
+
+    if ((keys.z || keys.Z || pad.a || touch.a) && !zLock) {
+      zLock = true;
+      action();
+    }
+    if (!keys.z && !keys.Z && !pad.a && !touch.a) zLock = false;
+  }
+
+  function drawText(text, x, y, color = '#fff', align = 'left') {
+    ctx.fillStyle = color;
+    ctx.font = '8px monospace';
+    ctx.textAlign = align;
+    ctx.fillText(text, x, y);
+  }
+
+  function box(x, y, w, h, c) {
+    ctx.fillStyle = c;
+    ctx.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+  }
+
+  function drawBike(b, highlight=false) {
+    const x = b.x, y = b.y;
+    box(x, y+7, 5, 5, '#101018');
+    box(x+11, y+7, 5, 5, '#101018');
+    box(x+2, y+5, 11, 2, highlight ? '#ffe066' : '#70c0ff');
+    box(x+7, y+2, 2, 6, highlight ? '#ffe066' : '#70c0ff');
+    drawText(String(b.num), x-1, y-2, highlight ? '#ffe066' : '#d8d8d8');
+  }
+
+  function drawPlayer() {
+    const p = state.player;
+    const x = Math.round(p.x), y = Math.round(p.y);
+    if (p.hold) {
+      box(x + (p.dir > 0 ? 9 : -12), y+6, 12, 2, '#70c0ff');
+      box(x + (p.dir > 0 ? 10 : -13), y+9, 4, 4, '#101018');
+      box(x + (p.dir > 0 ? 17 : -5), y+9, 4, 4, '#101018');
+    }
+    box(x+3, y, 5, 5, '#ffd0a0');
+    box(x+2, y+5, 7, 7, '#808080');
+    box(x+1, y+12, 3, 4, '#3030a0');
+    box(x+7, y+12, 3, 4, '#3030a0');
+    box(x+2, y+1, 6, 1, '#303030');
+  }
+
+  function drawCustomer() {
+    if (!state.customer) return;
+    const c = state.customer;
+    box(c.x+4, c.y, 6, 6, '#ffd0a0');
+    box(c.x+3, c.y+6, 8, 10, '#ff7070');
+    box(c.x+2, c.y+16, 3, 4, '#202020');
+    box(c.x+9, c.y+16, 3, 4, '#202020');
+
+    box(76, 6, 104, 20, '#f8f8f8');
+    box(78, 8, 100, 16, '#101018');
+    drawText(c.name + '「' + c.want + '番！」', 128, 19, '#ffe066', 'center');
+
+    const bw = 58;
+    const rate = Math.max(0, c.patience / c.maxPatience);
+    box(99, 28, bw, 4, '#603030');
+    box(99, 28, bw * rate, 4, rate < .33 ? '#ff6060' : '#60e060');
+  }
+
+  function drawWorld() {
+    box(0, 0, W, H, '#202838');
+    box(0, 0, W, 34, '#101018');
+    drawText('TIME ' + Math.ceil(state.time).toString().padStart(2, '0'), 8, 12, '#fff');
+    drawText('SCORE ' + state.score.toString().padStart(5, '0'), 66, 12, '#fff');
+    drawText('HI ' + state.highScore.toString().padStart(5, '0'), 130, 12, '#ffe066');
+    drawText('OK ' + state.served, 194, 12, '#fff');
+    drawText('MISS ' + state.miss, 226, 12, '#fff');
+
+    box(88, 34, 80, 10, '#806030');
+    drawText('入口', 128, 42, '#fff', 'center');
+
+    for (let y=48; y<160; y+=28) {
+      box(12, y+17, 232, 2, '#606878');
+    }
+
+    const nb = nearBike();
+    bikes.forEach(b => { if (!b.taken) drawBike(b, nb === b); });
+
+    drawCustomer();
+    drawPlayer();
+
+    if (state.messageTimer > 0 || state.mode !== 'play') {
+      box(24, 166, 208, 16, '#101018');
+      drawText(state.message, 128, 177, '#ffe066', 'center');
+    }
+  }
+
+  function drawTitle() {
+    box(0, 0, W, H, '#101018');
+    drawText('CHURINJO NO OCCHAN', 128, 54, '#ffe066', 'center');
+    drawText('駐輪場のおっちゃん', 128, 72, '#fff', 'center');
+    drawText('帰ってきたお客さんの', 128, 98, '#d8d8d8', 'center');
+    drawText('自転車を出してあげよう！', 128, 110, '#d8d8d8', 'center');
+    drawText('HIGH SCORE ' + loadHighScore(), 128, 132, '#ffe066', 'center');
+    drawText('ENTER START', 128, 148, '#60e060', 'center');
+    drawText('Z/A:取る  X/B:ダッシュ', 128, 166, '#9090ff', 'center');
+  }
+
+  function drawGameOver() {
+    drawWorld();
+    box(35, 48, 186, 88, '#101018');
+    box(39, 52, 178, 80, '#303040');
+    drawText('GAME OVER', 128, 70, '#ff7070', 'center');
+    drawText('SCORE ' + state.score, 128, 91, '#ffe066', 'center');
+    drawText('出した台数 ' + state.served + '台', 128, 108, '#fff', 'center');
+    drawText('ミス ' + state.miss, 128, 120, '#fff', 'center');
+    const recent = loadLastScores();
+    drawText('HIGH SCORE ' + state.highScore, 128, 137, '#ffe066', 'center');
+    drawText('ENTERでもう一回', 128, 151, '#60e060', 'center');
+    if (recent[0]) drawText('前回 ' + recent[0].score, 128, 164, '#d8d8d8', 'center');
+  }
+
+  function loop(t) {
+    pollGamepad();
+    const dt = Math.min(0.05, (t - state.lastTime) / 1000);
+    state.lastTime = t;
+    update(dt);
+    if (state.mode === 'title') drawTitle();
+    else if (state.mode === 'gameover') drawGameOver();
+    else drawWorld();
+    setupTouchControls();
+  requestAnimationFrame(loop);
+  }
+
+  window.addEventListener('keydown', e => {
+    initAudio();
+    keys[e.key] = true;
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' ','Enter'].includes(e.key)) e.preventDefault();
+  });
+  window.addEventListener('keyup', e => keys[e.key] = false);
+  window.addEventListener('gamepadconnected', () => initAudio());
+
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
