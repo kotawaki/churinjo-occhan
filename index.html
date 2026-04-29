@@ -135,8 +135,8 @@
     </div>
     <div class="rotate-note">スマホでは横向きにするとタッチ操作で遊べます。</div>
     <div class="help">
-      矢印キー：移動／おじさん選択　Z/A：取る・渡す・決定　X/B：ダッシュ　Enter/START：開始<br>
-      スマホ横向き：左右でおじさん選択、STARTで開始。十字キー／A／Bで操作
+      矢印キー：移動／おじさん選択　Z/A：取る・渡す・決定　X/B：ダッシュ　Enter/START：開始　P：ポーズ<br>
+      スマホ横向き：左右でおじさん選択、STARTで開始。十字キー／A／Bで操作。プレイ中STARTでポーズ
     </div>
   </div>
 
@@ -156,6 +156,13 @@
     { name:'一般', short:'一般', weight:4, stamina:4, speedPenalty:.14, color:'#70c0ff' },
     { name:'電動', short:'電動', weight:7, stamina:7, speedPenalty:.24, color:'#ffe066' },
     { name:'大型 子供乗せ', short:'大型', weight:10, stamina:10, speedPenalty:.36, color:'#ff9090' },
+  ];
+
+  const GIFT_TYPES = [
+    { id:'taiyaki', name:'タイ焼き', chance:0.34, stamina:+16, tension:0, time:0, color:'#d89040' },
+    { id:'heart', name:'ハート', chance:0.25, stamina:+26, tension:+24, time:0, color:'#ff80c0' },
+    { id:'clock', name:'時計', chance:0.22, stamina:0, tension:0, time:+8, color:'#80e0ff' },
+    { id:'skull', name:'ドクロ', chance:0.19, stamina:-24, tension:-28, time:0, color:'#e8e8e8' },
   ];
 
   const OJISAN_NAMES = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
@@ -178,10 +185,10 @@
   ojisans[4] = { id:'E', name:'優しいおっちゃん', power:4, speed:4, tech:5, kindness:9, color:'#907090' };
 
   const bikeRows = [
-    { y: 66, nums: [34,35,36,37,38,39,40,41] },
-    { y: 102, nums: [42,43,44,45,46,47,48,49] },
-    { y: 138, nums: [50,51,52,53,54,55,56,57] },
-    { y: 174, nums: [58,59,60,61,62,63,64,65] },
+    { y: 82, nums: [34,35,36,37,38,39,40,41] },
+    { y: 118, nums: [42,43,44,45,46,47,48,49] },
+    { y: 154, nums: [50,51,52,53,54,55,56,57] },
+    { y: 190, nums: [58,59,60,61,62,63,64,65] },
   ];
 
   const bikes = [];
@@ -189,6 +196,15 @@
     bikes.push({ num:n, x:34 + i * 34, y:row.y, taken:false, type:BIKE_TYPES[(n + i) % BIKE_TYPES.length] });
   }));
 
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function getMoveVector() {
+    let vx = 0, vy = 0;
+    if (keys.ArrowLeft || pad.left || touch.left) vx--;
+    if (keys.ArrowRight || pad.right || touch.right) vx++;
+    if (keys.ArrowUp || pad.up || touch.up) vy--;
+    if (keys.ArrowDown || pad.down || touch.down) vy++;
+    return { vx, vy, moving: !!(vx || vy) };
+  }
   function loadHighScore() { return Number(localStorage.getItem(SCORE_KEY) || 0); }
   function saveScore(score) {
     const high = loadHighScore();
@@ -199,19 +215,21 @@
   }
   function loadLastScores() { try { return JSON.parse(localStorage.getItem(LAST_KEY) || '[]'); } catch { return []; } }
 
+  let selectedOjisan = 0;
+
   function startState() {
     const o = ojisans[selectedOjisan];
     return {
-      mode:'select', time:70, score:0, highScore:loadHighScore(), miss:0, served:0,
+      mode:'title', time:70, score:0, highScore:loadHighScore(), miss:0, served:0,
       stamina:100, tension:35, musou:0, message:'おじさんを選んでSTART', messageTimer:0,
-      player:{ x:156, y:212, w:14, h:20, hold:null, dir:1 }, customer:null, nextCustomerTimer:0,
-      ojisan:o, lastTime:performance.now(), saved:false
+      player:{ x:156, y:214, w:14, h:20, hold:null, dir:1 }, customer:null, nextCustomerTimer:0,
+      ojisan:o, lastTime:performance.now(), saved:false, lastGift:null, giftTimer:0, talkTimer:0, pendingChattyBonus:null
     };
   }
 
-  let selectedOjisan = 0;
   let state = startState();
-  let zLock = false, enterLock = false, selectLock = false;
+  let zLock = false, enterLock = false, selectLock = false, pauseLock = false;
+  let ignoreStartUntilRelease = false;
   let audioReady = false, audioCtx = null;
 
   function initAudio() {
@@ -232,7 +250,60 @@
     else if (name === 'ok') { beep(520,.06); setTimeout(()=>beep(780,.09),70); }
     else if (name === 'miss') { beep(180,.12,'sawtooth',.18); setTimeout(()=>beep(120,.14,'sawtooth',.18),110); }
     else if (name === 'musou') { beep(700,.07); setTimeout(()=>beep(900,.07),80); setTimeout(()=>beep(1100,.16),160); }
+    else if (name === 'pause') beep(420,.08);
     else if (name === 'gameover') { beep(330,.12); setTimeout(()=>beep(250,.12),130); setTimeout(()=>beep(180,.2),260); }
+  }
+
+  const MUSIC = {
+    title: {
+      step: .24,
+      notes: [262,0,330,0,392,0,523,0,392,0,330,0,294,0,262,0]
+    },
+    select: {
+      step: .18,
+      notes: [392,440,494,0,392,440,523,0,330,392,440,0,294,330,392,0]
+    },
+    play: {
+      step: .14,
+      notes: [523,0,523,587,659,0,587,0,523,659,784,0,659,587,523,0]
+    }
+  };
+  let musicMode = '';
+  let musicIndex = 0;
+  let musicTimer = 0;
+
+  function musicBeep(freq, duration=.07, volume=.035) {
+    if (!audioReady || !audioCtx || !freq) return;
+    const now = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(freq, now);
+    gain.gain.setValueAtTime(volume, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(now);
+    osc.stop(now + duration);
+  }
+
+  function musicTick(dt) {
+    const mode = state.mode === 'title' ? 'title' : state.mode === 'select' ? 'select' : state.mode === 'play' ? 'play' : '';
+    if (!mode || !audioReady) { musicMode = mode; return; }
+    if (mode !== musicMode) {
+      musicMode = mode;
+      musicIndex = 0;
+      musicTimer = 0;
+    }
+    const track = MUSIC[mode];
+    musicTimer -= dt;
+    if (musicTimer <= 0) {
+      const note = track.notes[musicIndex % track.notes.length];
+      musicBeep(note, Math.min(.11, track.step * .7));
+      if (mode === 'play' && note) musicBeep(note / 2, Math.min(.09, track.step * .6), .018);
+      musicIndex++;
+      musicTimer = track.step;
+    }
   }
 
   const pad = { up:false, down:false, left:false, right:false, a:false, b:false, start:false };
@@ -288,15 +359,19 @@
       { name:'会社員', mood:'bad', patience:8, bonus:120, ten:-14, text:'急いでるんやけど' },
       { name:'学生', mood:'normal', patience:11, bonus:90, ten:5, text:'あざっす' },
       { name:'常連', mood:'good', patience:16, bonus:80, ten:12, text:'まいど助かるわ' },
+      { name:'話好きの常連', mood:'good', patience:18, bonus:95, ten:16, text:'ちょっと聞いてや', chatty:true },
       { name:'綺麗なお姉さん', mood:'good', patience:12, bonus:150, ten:28, text:'ありがとうございます' },
       { name:'態度悪い客', mood:'bad', patience:9, bonus:60, ten:-24, text:'はよしてや' },
     ];
     const t = moods[Math.floor(Math.random() * moods.length)], b = randomBike();
-    state.customer = { x:148, y:28, want:b.num, wantType:b.type, patience:t.patience + state.ojisan.kindness * .35, maxPatience:t.patience + state.ojisan.kindness * .35, ...t };
+    state.customer = { x:148, y:52, want:b.num, wantType:b.type, patience:t.patience + state.ojisan.kindness * .35, maxPatience:t.patience + state.ojisan.kindness * .35, ...t };
   }
   function restart() {
     initAudio(); sound('start'); resetBikes();
-    state = startState(); state.mode = 'play'; state.message = state.ojisan.name + ' 出勤！'; state.messageTimer = 1.1; spawnCustomer();
+    state = startState(); state.mode = 'play'; state.message = state.ojisan.name + ' 出勤！'; state.messageTimer = 1.1;
+    pauseLock = true;
+    ignoreStartUntilRelease = true;
+    spawnCustomer();
   }
 
   function nearBike() {
@@ -308,8 +383,78 @@
     }
     return best;
   }
-  function atCounter() { const p = state.player; return p.x > 118 && p.x < 190 && p.y < 54; }
-  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function atCounter() {
+    const p = state.player;
+    // 入口エリア。上部UIを広げてプレイヤーの最小Yが58になったので、判定も入口の高さに合わせる。
+    return p.x > 108 && p.x < 198 && p.y < 82;
+  }
+
+  function maybeGift(customer) {
+    // たまにお客さんが差し入れをくれる。態度が良い客ほど少し出やすい。
+    let chance = 0.28;
+    if (customer.mood === 'good') chance += 0.14;
+    if (customer.mood === 'bad') chance -= 0.08;
+    if (customer.chatty) chance += 0.10;
+    chance += state.ojisan.kindness * 0.008;
+    if (Math.random() > chance) return null;
+
+    let roll = Math.random();
+    for (const g of GIFT_TYPES) {
+      roll -= g.chance;
+      if (roll <= 0) return g;
+    }
+    return GIFT_TYPES[0];
+  }
+
+  function maybeChattyBonus(customer) {
+    if (!customer.chatty) return null;
+    const roll = Math.random();
+    if (roll < 0.10) return { id:'musouitem', name:'無双アイテム', color:'#ffe066' };
+    if (roll < 0.28) return { id:'clock10', name:'時計+10秒', color:'#80e0ff' };
+    return null;
+  }
+
+  function applyChattyBonus(item) {
+    if (!item) return '';
+    state.lastGift = item;
+    state.giftTimer = 1.6;
+    if (item.id === 'clock10') {
+      state.time = clamp(state.time + 10, 0, 999);
+      sound('musou');
+      return '時計をくれた！ +10秒';
+    }
+    if (item.id === 'musouitem') {
+      state.musou = 10;
+      sound('musou');
+      return '無双アイテムや！';
+    }
+    return '';
+  }
+
+  function applyGift(gift) {
+    if (!gift) return '';
+    state.stamina = clamp(state.stamina + gift.stamina, 0, 100);
+    state.tension = clamp(state.tension + gift.tension, 0, 100);
+    state.time = clamp(state.time + gift.time, 0, 999);
+
+    if (gift.id === 'taiyaki') {
+      sound('pickup');
+      return '差し入れ:タイ焼き 体力+';
+    }
+    if (gift.id === 'heart') {
+      sound('ok');
+      return '差し入れ:ハート 回復+';
+    }
+    if (gift.id === 'clock') {
+      sound('musou');
+      return '差し入れ:時計 時間+' + gift.time;
+    }
+    if (gift.id === 'skull') {
+      sound('miss');
+      return '差し入れ:ドクロ…ダウン';
+    }
+    return '';
+  }
 
   function action() {
     if (state.mode !== 'play') return;
@@ -322,9 +467,20 @@
           const add = c.bonus + patienceBonus + techBonus + musouBonus;
           state.score += add; state.served++;
           state.tension = clamp(state.tension + c.ten + Math.floor(o.kindness / 2), 0, 100);
-          state.message = c.text + ' +' + add;
+
+          const gift = maybeGift(c);
+          const giftMsg = applyGift(gift);
+          state.lastGift = gift;
+          state.giftTimer = gift ? 1.4 : 0;
+
+          state.message = giftMsg || (c.text + ' +' + add);
+          if (c.chatty) {
+            state.talkTimer = 2 + Math.random() * 3;
+            state.pendingChattyBonus = maybeChattyBonus(c);
+            state.message = 'ぺちゃくちゃ話を聞いてる…';
+          }
           if (state.tension >= 100) { state.musou = 10; state.tension = 35; state.message = '無双状態突入！'; sound('musou'); }
-          state.messageTimer = 1.0; state.customer = null; state.nextCustomerTimer = .75;
+          state.messageTimer = c.chatty ? state.talkTimer : 1.2; state.customer = null; state.nextCustomerTimer = c.chatty ? state.talkTimer + .4 : .75;
         } else {
           sound('miss'); state.score = Math.max(0, state.score - 50); state.miss++; state.tension = clamp(state.tension - 10, 0, 100);
           state.message = '番号ちゃうで！ -50'; state.messageTimer = 1.0; p.hold.taken = false;
@@ -344,28 +500,89 @@
     }
   }
 
+  function togglePause() {
+    if (state.mode === 'play') {
+      state.mode = 'pause';
+      state.message = 'ポーズ中';
+      state.messageTimer = 0;
+      sound('pause');
+    } else if (state.mode === 'pause') {
+      state.mode = 'play';
+      state.message = '再開！';
+      state.messageTimer = .7;
+      state.lastTime = performance.now();
+      sound('pause');
+    }
+  }
+
   function update(dt) {
-    const startPressed = keys.Enter || pad.start || touch.start;
+    const rawStartPressed = keys.Enter || pad.start || touch.start;
+    const rawPadTouchStart = pad.start || touch.start;
+    if (ignoreStartUntilRelease && !rawStartPressed) ignoreStartUntilRelease = false;
+
+    const startPressed = ignoreStartUntilRelease ? false : rawStartPressed;
+    const pausePressed = ignoreStartUntilRelease ? false : (keys.p || keys.P || (rawPadTouchStart && (state.mode === 'play' || state.mode === 'pause')));
     const aPressed = keys.z || keys.Z || pad.a || touch.a;
     const leftPressed = keys.ArrowLeft || pad.left || touch.left;
     const rightPressed = keys.ArrowRight || pad.right || touch.right;
 
-    if (state.mode === 'select') {
-      if ((leftPressed || rightPressed) && !selectLock) {
-        selectedOjisan = (selectedOjisan + (rightPressed ? 1 : -1) + ojisans.length) % ojisans.length;
-        state.ojisan = ojisans[selectedOjisan]; sound('pickup'); selectLock = true;
+    if (state.mode === 'title') {
+      if ((startPressed || aPressed) && !enterLock) {
+        enterLock = true;
+        state.mode = 'select';
+        sound('start');
       }
-      if (!leftPressed && !rightPressed) selectLock = false;
-      if ((startPressed || aPressed) && !enterLock) { enterLock = true; restart(); }
       if (!startPressed && !aPressed) enterLock = false;
+      if (!pausePressed) pauseLock = false;
       return;
     }
 
-    if (startPressed && !enterLock) {
-      enterLock = true;
-      if (state.mode === 'gameover') { state = startState(); state.mode = 'select'; }
+    if (state.mode === 'select') {
+      const upPressed = keys.ArrowUp || pad.up || touch.up;
+      const downPressed = keys.ArrowDown || pad.down || touch.down;
+      if ((leftPressed || rightPressed || upPressed || downPressed) && !selectLock) {
+        const cols = 4;
+        const rows = Math.ceil(ojisans.length / cols);
+        let col = selectedOjisan % cols;
+        let row = Math.floor(selectedOjisan / cols);
+
+        if (leftPressed) col = (col + cols - 1) % cols;
+        else if (rightPressed) col = (col + 1) % cols;
+        else if (upPressed) row = (row + rows - 1) % rows;
+        else if (downPressed) row = (row + 1) % rows;
+
+        let next = row * cols + col;
+        while (next >= ojisans.length) {
+          row = (row + rows - 1) % rows;
+          next = row * cols + col;
+        }
+        selectedOjisan = next;
+        state.ojisan = ojisans[selectedOjisan];
+        sound('pickup');
+        selectLock = true;
+      }
+      if (!leftPressed && !rightPressed && !upPressed && !downPressed) selectLock = false;
+      if ((startPressed || aPressed) && !enterLock) { enterLock = true; restart(); }
+      if (!startPressed && !aPressed) enterLock = false;
+      if (!pausePressed) pauseLock = false;
+      return;
     }
-    if (!startPressed) enterLock = false;
+
+    if (state.mode === 'gameover') {
+      if (startPressed && !enterLock) { enterLock = true; state = startState(); state.mode = 'title'; }
+      if (!startPressed) enterLock = false;
+      if (!pausePressed) pauseLock = false;
+      return;
+    }
+
+    if (pausePressed && !pauseLock) {
+      pauseLock = true;
+      togglePause();
+      return;
+    }
+    if (!pausePressed) pauseLock = false;
+
+    if (state.mode === 'pause') return;
     if (state.mode !== 'play') return;
 
     state.time -= dt;
@@ -376,10 +593,26 @@
     }
 
     if (state.messageTimer > 0) state.messageTimer -= dt;
+    if (state.giftTimer > 0) state.giftTimer -= dt;
     if (state.musou > 0) state.musou -= dt;
+    if (state.talkTimer > 0) {
+      state.talkTimer -= dt;
+      if (state.talkTimer <= 0) {
+        state.talkTimer = 0;
+        const bonusMsg = applyChattyBonus(state.pendingChattyBonus);
+        state.pendingChattyBonus = null;
+        state.message = bonusMsg || '話、長かったな…';
+        state.messageTimer = bonusMsg ? 1.4 : .8;
+      }
+      return;
+    }
 
-    if (!state.player.hold) state.stamina = clamp(state.stamina + (7 + state.ojisan.power * .6) * dt, 0, 100);
-    else if (state.musou <= 0) {
+    const move = getMoveVector();
+    const dashing = keys.x || keys.X || pad.b || touch.b;
+
+    // ダッシュ中は自然回復させない。前は回復量がダッシュ消費を上回って見えにくかった。
+    if (!state.player.hold && !(dashing && move.moving)) state.stamina = clamp(state.stamina + (7 + state.ojisan.power * .6) * dt, 0, 100);
+    else if (state.player.hold && state.musou <= 0) {
       const t = state.player.hold.type;
       const drain = Math.max(.4, t.weight * .9 - state.ojisan.power * .35);
       state.stamina = clamp(state.stamina - drain * dt, 0, 100);
@@ -395,22 +628,25 @@
     }
 
     const p = state.player, o = state.ojisan;
+    let vx = move.vx, vy = move.vy;
     let sp = 36 + o.speed * 4.2;
-    if (keys.x || keys.X || pad.b || touch.b) sp += 24;
+    if (dashing) {
+      sp += 24;
+      if (move.moving) {
+        // 力が高いほどパワーダッシュで消費が重い。回復停止込みで目に見えて減る量に調整。
+        const dashDrain = state.musou > 0 ? 0 : (18 + state.ojisan.power * 1.4);
+        state.stamina = clamp(state.stamina - dashDrain * dt, 0, 100);
+      }
+    }
     if (p.hold && state.musou <= 0) sp *= (1 - p.hold.type.speedPenalty + o.power * .018);
     if (state.stamina < 25 && state.musou <= 0) sp *= .62;
     if (state.musou > 0) sp *= 1.55;
 
-    let vx = 0, vy = 0;
-    if (keys.ArrowLeft || pad.left || touch.left) vx--;
-    if (keys.ArrowRight || pad.right || touch.right) vx++;
-    if (keys.ArrowUp || pad.up || touch.up) vy--;
-    if (keys.ArrowDown || pad.down || touch.down) vy++;
     if (vx || vy) {
       const len = Math.sqrt(vx*vx + vy*vy); vx /= len; vy /= len;
       p.x += vx * sp * dt; p.y += vy * sp * dt; if (vx !== 0) p.dir = vx > 0 ? 1 : -1;
     }
-    p.x = clamp(p.x, 4, W - p.w - 4); p.y = clamp(p.y, 34, H - p.h - 6);
+    p.x = clamp(p.x, 4, W - p.w - 4); p.y = clamp(p.y, 58, H - p.h - 6);
 
     if (aPressed && !zLock) { zLock = true; action(); }
     if (!aPressed) zLock = false;
@@ -419,166 +655,358 @@
   function box(x,y,w,h,c) { ctx.fillStyle = c; ctx.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h)); }
   function drawText(text,x,y,color='#fff',align='left') { ctx.fillStyle=color; ctx.font='10px monospace'; ctx.textAlign=align; ctx.fillText(text,x,y); }
   function bar(x,y,w,h,rate,c,bg='#303040') { box(x,y,w,h,bg); box(x,y,w*clamp(rate,0,1),h,c); }
-  function statLine(label, val, x, y) { drawText(label, x, y, '#d8d8d8'); for(let i=0;i<10;i++) box(x+38+i*5,y-6,4,4,i<val?'#ffe066':'#404050'); }
+  function statLine(label, val, x, y) { drawText(label, x, y, '#d8d8d8'); for(let i=0;i<10;i++) box(x+45+i*6,y-7,5,5,i<val?'#ffe066':'#404050'); }
 
   function drawBike(b, highlight=false) {
     const x=b.x,y=b.y,t=b.type;
     const c=highlight?'#ffffff':t.color;
     const dark='#101018';
+    const tire='#080810';
+    const rim='#303848';
+    const spoke='#9098a8';
     const metal=highlight?'#ffe066':'#d8d8d8';
+    const shadow='#000000';
     const brown='#a07040';
     const pink='#ffb0b0';
 
-    // 2倍くらいのピクセル感で描く8bit風自転車
     const wheel = (wx, wy, big=false) => {
-      if (big) {
-        box(wx,wy,8,8,dark); box(wx+2,wy+2,4,4,'#303848'); box(wx+3,wy+3,2,2,'#9098a8');
-      } else {
-        box(wx,wy,7,7,dark); box(wx+2,wy+2,3,3,'#303848'); box(wx+3,wy+3,1,1,'#9098a8');
-      }
+      const s = big ? 9 : 8;
+      box(wx+1, wy+s, s-1, 2, shadow);
+      box(wx+1, wy, s-2, 1, tire);
+      box(wx, wy+1, s, s-2, tire);
+      box(wx+1, wy+s-1, s-2, 1, tire);
+      box(wx+2, wy+2, s-4, s-4, rim);
+      box(wx+3, wy+3, s-6, s-6, '#202838');
+      box(wx+Math.floor(s/2), wy+2, 1, s-4, spoke);
+      box(wx+2, wy+Math.floor(s/2), s-4, 1, spoke);
     };
-    const frame = (pts, col=c) => pts.forEach(r => box(x+r[0], y+r[1], r[2], r[3], col));
+    const px = (a,b,w,h,col) => box(x+a,y+b,w,h,col);
+    const frame = (pts, col=c) => pts.forEach(r => px(r[0], r[1], r[2], r[3], col));
+
+    // 地面影
+    px(0, 22, 26, 2, '#101820');
 
     if (t.name === 'ミニベロ') {
-      // 小径・コンパクト。小さいけど目立つように太め
-      wheel(x+1,y+12,false); wheel(x+15,y+12,false);
-      frame([[5,11,13,3],[9,7,3,7],[6,8,7,3],[14,6,6,2],[3,9,5,2]]);
-      box(x+17,y+5,5,2,metal); box(x+4,y+7,5,2,metal);
+      wheel(x+1,y+12,false); wheel(x+16,y+12,false);
+      frame([[5,11,15,3],[9,7,3,8],[6,8,8,3],[15,6,7,2],[3,9,6,2],[12,10,4,2]]);
+      px(17,5,6,2,metal); px(4,7,6,2,metal); px(21,7,2,3,metal);
+      px(8,5,5,2,'#f0f0f0');
     } else if (t.name === 'ロードバイク') {
-      // 細身・前傾ハンドル
-      wheel(x,y+12,false); wheel(x+16,y+12,false);
-      frame([[4,11,16,2],[8,7,8,2],[10,7,2,6],[6,9,4,2],[14,9,4,2]]);
-      box(x+19,y+5,5,2,metal); box(x+21,y+7,2,4,metal);
-      box(x+5,y+7,5,2,metal);
+      wheel(x,y+12,false); wheel(x+17,y+12,false);
+      frame([[4,12,18,2],[8,7,10,2],[10,7,2,7],[6,10,5,2],[15,9,5,2],[12,8,5,5]]);
+      px(20,5,6,2,metal); px(23,7,2,4,metal); px(24,10,3,1,metal);
+      px(5,7,6,2,metal); px(8,5,5,2,'#f0f0f0');
+      px(3,14,4,1,c); px(19,14,4,1,c);
     } else if (t.name === '一般') {
-      // 普通のママチャリ。カゴ付き
-      wheel(x,y+12,false); wheel(x+15,y+12,false);
-      frame([[3,10,17,3],[9,6,3,8],[6,8,8,3],[14,7,4,3]]);
-      box(x+18,y+7,5,5,brown); box(x+4,y+6,7,2,metal); box(x+18,y+5,5,2,metal);
+      wheel(x,y+12,false); wheel(x+16,y+12,false);
+      frame([[3,11,19,3],[9,6,3,9],[6,9,9,3],[15,7,5,3],[12,10,4,3]]);
+      px(19,7,6,6,brown); px(20,8,4,3,'#c09050');
+      px(4,6,8,2,metal); px(19,5,6,2,metal); px(21,4,3,1,metal);
+      px(7,4,6,2,'#f0f0f0'); px(2,11,3,2,'#ffd0a0');
     } else if (t.name === '電動') {
-      // バッテリー付き。太くて重い
-      wheel(x,y+11,true); wheel(x+15,y+11,true);
-      frame([[3,10,18,4],[9,5,3,9],[6,8,10,3],[15,7,5,3]]);
-      box(x+7,y+12,8,5,'#404050'); box(x+8,y+13,6,3,'#707080');
-      box(x+18,y+6,6,5,brown); box(x+4,y+5,7,2,metal); box(x+18,y+4,5,2,metal);
-    } else {
-      // 大型・子供乗せ付き。画面内で一番ゴツい
       wheel(x,y+11,true); wheel(x+16,y+11,true);
-      frame([[2,10,21,4],[9,4,4,10],[6,8,10,3],[15,7,6,3]]);
-      box(x+17,y+2,7,9,pink); box(x+18,y+3,5,5,'#ff8080');
-      box(x+2,y+3,6,7,pink); box(x+3,y+4,4,4,'#ff8080');
-      box(x+20,y+10,4,3,brown); box(x+4,y+5,7,2,metal);
+      frame([[3,10,20,4],[9,5,4,10],[6,8,11,3],[16,7,6,3],[12,10,4,4]]);
+      px(7,12,9,5,'#404050'); px(8,13,7,3,'#707080'); px(9,14,2,1,'#ffe066');
+      px(20,6,6,6,brown); px(21,7,4,3,'#c09050');
+      px(4,5,8,2,metal); px(19,4,6,2,metal); px(7,3,6,2,'#f0f0f0');
+      px(2,9,4,3,'#505060');
+    } else {
+      wheel(x,y+11,true); wheel(x+17,y+11,true);
+      frame([[2,10,23,4],[9,4,4,11],[6,8,11,3],[16,7,7,3],[12,10,5,4]]);
+      px(18,1,8,11,pink); px(19,2,6,6,'#ff8080'); px(20,8,4,3,'#904040');
+      px(1,3,7,8,pink); px(2,4,5,5,'#ff8080'); px(2,10,5,2,'#904040');
+      px(21,10,4,3,brown); px(4,5,8,2,metal); px(18,4,6,2,metal);
+      px(8,2,7,2,'#f0f0f0'); px(24,6,3,3,'#ffd0a0');
     }
 
-    // 重量レベル表示：重いほど点が多い
-    for (let i=0; i<Math.ceil(t.weight/3); i++) box(x+i*4, y+21, 3, 2, c);
-
+    for (let i=0; i<Math.ceil(t.weight/3); i++) box(x+i*4, y+25, 3, 2, c);
     drawText(String(b.num), x-1, y-2, highlight?'#ffe066':'#d8d8d8');
   }
 
-  function drawOjisanSprite(x, y, o, scale=1, pose='stand') {
+  function drawOjisanSprite(x, y, o, scale=1, dir=1) {
     const s = scale;
     const px = (a,b,w,h,c) => box(x+a*s, y+b*s, w*s, h*s, c);
-    const skin = '#ffd0a0';
-    const hair = '#303030';
-    const pants = '#3030a0';
-    const shoe = '#101018';
-    const shirt = o.color;
+    const skin = '#ffd0a0', skin2 = '#e8a878', hair = '#303030', gray = '#d8d8d8';
+    const pants = '#3030a0', pants2 = '#202070', shoe = '#101018', shirt = o.color;
+    const shirtDark = '#404050';
     const hi = state.musou > 0 && Math.floor(performance.now()/80)%2===0;
-    if (hi) px(-2,-2,16,24,'#ffe066');
+    if (hi) px(-3,-3,18,27,'#ffe066');
 
-    // 2倍ピクセル風おっちゃん：頭・髪・顔・胴体・腕・足
-    px(4,0,6,2,hair);
-    px(3,2,8,6,skin);
+    // 影
+    px(1,23,13,2,'#080810');
+
+    // 頭・髪・薄毛ライン
+    px(4,0,7,2,hair);
+    px(3,2,9,7,skin);
+    px(3,3,1,4,hair);
+    px(10,3,2,3,hair);
+    px(5,1,5,1,gray);
+    px(4,8,7,1,skin2);
+
+    // 顔
     px(5,4,1,1,'#101018');
     px(9,4,1,1,'#101018');
-    px(6,6,4,1,'#904040');
-    px(2,8,10,8,shirt);
-    px(1,9,3,7,skin);
-    px(10,9,3,7,skin);
-    px(3,16,4,6,pants);
-    px(8,16,4,6,pants);
-    px(2,21,5,2,shoe);
-    px(8,21,5,2,shoe);
-    // 帽子/薄毛表現
-    px(5,1,4,1,'#d8d8d8');
-    // 技術が高いおっちゃんは腰に道具っぽいドット
-    if (o.tech >= 8) px(11,12,2,3,'#ffe066');
-    // 力持ちは腕を太く
-    if (o.power >= 8) { px(0,10,2,6,skin); px(12,10,2,6,skin); }
+    px(7,5,1,1,skin2);
+    px(6,7,4,1,'#904040');
+    if (o.kindness >= 8) px(6,6,4,1,'#ffe0c0');
+
+    // 胴体・ベルト
+    px(2,9,11,8,shirt);
+    px(3,10,9,2,'#a0a0a0');
+    px(2,16,11,2,shirtDark);
+    px(6,16,2,2,'#ffe066');
+
+    // 腕：力が高いと太い。方向で片腕を少し前に。
+    const armW = o.power >= 8 ? 3 : 2;
+    if (dir >= 0) {
+      px(0,10,armW,8,skin); px(12,10,armW,7,skin);
+      px(13,15,2,2,skin2);
+    } else {
+      px(0,10,armW,7,skin); px(12,10,armW,8,skin);
+      px(0,15,2,2,skin2);
+    }
+
+    // 足
+    px(3,18,4,6,pants); px(8,18,4,6,pants);
+    px(3,21,4,3,pants2); px(8,21,4,3,pants2);
+    px(2,24,5,2,shoe); px(8,24,6,2,shoe);
+
+    // 能力の見た目差
+    if (o.tech >= 8) { px(12,14,2,4,'#ffe066'); px(12,18,2,1,'#101018'); }
+    if (o.speed >= 8) { px(1,25,5,1,'#80e0ff'); px(9,25,6,1,'#80e0ff'); }
+    if (o.power >= 8) { px(0,12,2,5,skin2); px(13,12,2,5,skin2); }
+  }
+
+  function drawCustomerSprite(c, x, y) {
+    const skin = '#ffd0a0';
+    const hair = c.name.includes('お姉さん') ? '#503020' : c.name.includes('学生') ? '#202020' : '#303030';
+    const body = c.mood === 'good' ? '#ff80c0' : c.mood === 'bad' ? '#904040' : c.name.includes('会社員') ? '#405090' : '#ff7070';
+    const pants = c.name.includes('お姉さん') ? '#703080' : '#202030';
+    const px = (a,b,w,h,col) => box(x+a,y+b,w,h,col);
+    px(1,22,15,2,'#080810');
+    px(5,0,7,2,hair); px(4,2,9,7,skin); px(3,3,2,5,hair); px(11,3,2,4,hair);
+    px(6,4,1,1,'#101018'); px(10,4,1,1,'#101018');
+    if (c.mood === 'bad') { px(6,6,5,1,'#101018'); px(5,3,2,1,'#101018'); px(10,3,2,1,'#101018'); }
+    else { px(7,7,4,1,'#904040'); }
+    px(3,9,11,9,body); px(4,10,9,2,'#f0f0f0');
+    px(1,10,3,7,skin); px(13,10,3,7,skin);
+    if (c.name.includes('会社員')) px(13,13,4,5,'#a07040');
+    if (c.name.includes('おばちゃん')) px(2,1,12,2,'#a06080');
+    px(4,18,4,5,pants); px(9,18,4,5,pants); px(3,23,5,2,'#101018'); px(9,23,5,2,'#101018');
   }
 
   function drawPlayer() {
     const p=state.player,o=state.ojisan,x=Math.round(p.x),y=Math.round(p.y);
     if (p.hold) {
-      const hx=x+(p.dir>0?12:-24);
-      const hy=y+5;
-      // 持っている自転車も少し大きめの簡易ドット表示
-      const c=p.hold.type.color;
-      box(hx,hy+8,7,7,'#101018'); box(hx+15,hy+8,7,7,'#101018');
-      box(hx+3,hy+7,17,3,c); box(hx+9,hy+3,3,8,c);
+      const hx=x+(p.dir>0?12:-24), hy=y+5, c=p.hold.type.color;
+      box(hx,hy+8,7,7,'#101018'); box(hx+15,hy+8,7,7,'#101018'); box(hx+3,hy+7,17,3,c); box(hx+9,hy+3,3,8,c);
       if (p.hold.type.weight >= 7) box(hx+18,hy+3,5,7,'#ffb0b0');
     }
-    drawOjisanSprite(x-2,y-6,o,1,'walk');
+    drawOjisanSprite(x-2,y-8,o,1,p.dir);
   }
+
   function drawCustomer() {
     if (!state.customer) return; const c=state.customer;
-    const body = c.mood === 'good' ? '#ff80c0' : c.mood === 'bad' ? '#904040' : '#ff7070';
-    box(c.x+4,c.y,6,6,'#ffd0a0'); box(c.x+3,c.y+6,8,10,body); box(c.x+2,c.y+16,3,4,'#202020'); box(c.x+9,c.y+16,3,4,'#202020');
-    box(62,5,132,23,'#f8f8f8'); box(64,7,128,19,'#101018');
-    drawText(c.name + '「' + c.want + '番！」', 128, 16, '#ffe066', 'center');
-    drawText(c.wantType.short, 128, 25, c.wantType.color, 'center');
-    bar(99,30,58,4,c.patience/c.maxPatience,c.patience/c.maxPatience<.33?'#ff6060':'#60e060','#603030');
-  }
-  function drawWorld() {
-    box(0,0,W,H,'#202838'); box(0,0,W,36,'#101018');
-    drawText('TIME ' + Math.ceil(state.time).toString().padStart(2,'0'), 6, 10);
-    drawText('SCORE ' + state.score.toString().padStart(5,'0'), 58, 10);
-    drawText('HI ' + state.highScore.toString().padStart(5,'0'), 132, 10, '#ffe066');
-    drawText('OK ' + state.served, 198, 10); drawText('M' + state.miss, 230, 10);
-    drawText(state.ojisan.id, 6, 22, '#ffe066');
-    drawText('体力', 23, 22, '#d8d8d8'); bar(48,16,52,6,state.stamina/100,state.stamina<25?'#ff6060':'#60e060');
-    drawText('テン', 106, 22, '#d8d8d8'); bar(132,16,52,6,state.tension/100,'#ff80c0');
-    if (state.musou > 0) drawText('無双 ' + Math.ceil(state.musou), 192, 22, '#ffe066');
+    drawCustomerSprite(c, c.x, c.y);
 
-    box(110,36,100,12,'#806030'); drawText('入口',160,46,'#fff','center');
-    for (let y=60; y<206; y+=36) box(18,y+25,284,2,'#606878');
+    const bx = 166;
+    const by = 22;
+    box(bx,by,146,30,'#f8f8f8');
+    box(bx+3,by+3,140,24,'#101018');
+    drawText(c.name + '「' + c.want + '番！」', bx+73, by+13, '#ffe066', 'center');
+    drawText(c.wantType.short, bx+73, by+25, c.wantType.color, 'center');
+    bar(bx+36, by+32, 74, 5, c.patience/c.maxPatience, c.patience/c.maxPatience<.33?'#ff6060':'#60e060', '#603030');
+  }
+
+  function drawGiftIcon(g, x, y) {
+    if (!g) return;
+    if (g.id === 'taiyaki') {
+      box(x+2,y+4,14,7,'#d89040'); box(x+4,y+2,8,3,'#f0b060'); box(x+15,y+6,4,3,'#d89040'); box(x+5,y+6,2,2,'#101018');
+    } else if (g.id === 'heart') {
+      box(x+4,y+3,4,4,'#ff80c0'); box(x+10,y+3,4,4,'#ff80c0'); box(x+2,y+7,14,5,'#ff80c0'); box(x+5,y+12,8,3,'#ff80c0'); box(x+8,y+15,2,2,'#ff80c0');
+    } else if (g.id === 'clock' || g.id === 'clock10') {
+      box(x+4,y+2,12,12,'#80e0ff'); box(x+6,y+4,8,8,'#101018'); box(x+9,y+5,2,5,'#e8e8e8'); box(x+9,y+9,5,2,'#e8e8e8'); box(x+6,y,2,2,'#e8e8e8'); box(x+14,y,2,2,'#e8e8e8');
+      if (g.id === 'clock10') drawText('+10', x+21, y+12, '#80e0ff');
+    } else if (g.id === 'skull') {
+      box(x+4,y+2,12,11,'#e8e8e8'); box(x+6,y+5,3,3,'#101018'); box(x+12,y+5,3,3,'#101018'); box(x+9,y+9,2,2,'#101018'); box(x+6,y+13,2,3,'#e8e8e8'); box(x+10,y+13,2,3,'#e8e8e8'); box(x+14,y+13,2,3,'#e8e8e8');
+    } else if (g.id === 'musouitem') {
+      box(x+6,y+1,8,8,'#ffe066'); box(x+4,y+5,12,8,'#ffb000'); box(x+8,y+9,4,7,'#ffe066'); box(x+7,y+4,2,2,'#ffffff');
+    }
+  }
+
+  function drawWorld() {
+    box(0,0,W,H,'#202838'); box(0,0,W,58,'#101018');
+    drawText('TIME ' + Math.ceil(state.time).toString().padStart(2,'0'), 8, 13);
+    drawText('SCORE ' + state.score.toString().padStart(5,'0'), 78, 13);
+    drawText('HI ' + state.highScore.toString().padStart(5,'0'), 170, 13, '#ffe066');
+    drawText('OK ' + state.served, 254, 13); drawText('M' + state.miss, 292, 13);
+    drawText(state.ojisan.id, 8, 31, '#ffe066');
+    drawText('体力', 30, 31, '#d8d8d8'); bar(62,23,72,8,state.stamina/100,state.stamina<25?'#ff6060':'#60e060');
+    drawText('テン', 30, 43, '#d8d8d8'); bar(62,35,72,8,state.tension/100,'#ff80c0');
+    if (state.musou > 0) drawText('無双 ' + Math.ceil(state.musou), 146, 43, '#ffe066');
+
+    box(110,58,100,12,'#806030'); drawText('入口',160,68,'#fff','center');
+    for (let y=76; y<222; y+=36) box(18,y+25,284,2,'#606878');
     const nb = nearBike(); bikes.forEach(b => { if (!b.taken) drawBike(b, nb===b); });
     drawCustomer(); drawPlayer();
+    if (state.talkTimer > 0) {
+      box(86,164,148,18,'#101018');
+      drawText('常連トーク中... ' + Math.ceil(state.talkTimer), 160, 177, '#ffe066', 'center');
+    }
+    if (state.giftTimer > 0 && state.lastGift) {
+      box(112,186,96,24,'#101018');
+      drawGiftIcon(state.lastGift, 120, 190);
+      drawText(state.lastGift.name, 154, 203, state.lastGift.color, 'left');
+    }
     if (state.messageTimer > 0 || state.mode !== 'play') { box(32,216,256,18,'#101018'); drawText(state.message,160,229,'#ffe066','center'); }
   }
+
+  function drawTitle() {
+    box(0,0,W,H,'#101018');
+    box(20,18,280,204,'#202838');
+    box(26,24,268,192,'#303040');
+
+    drawText('CHURINJO NO OCCHAN',160,54,'#ffe066','center');
+    drawText('駐輪場のおっちゃん',160,82,'#ffffff','center');
+    drawText('帰ってきたお客さんの',160,112,'#d8d8d8','center');
+    drawText('自転車を出してあげよう！',160,126,'#d8d8d8','center');
+
+    // タイトル用ミニ演出
+    drawOjisanSprite(80, 145, ojisans[0], 1, 1);
+    const demoBike = { x:122, y:146, num:88, type:BIKE_TYPES[2] };
+    drawBike(demoBike, false);
+    drawCustomerSprite({ name:'お客さん', mood:'good' }, 210, 146);
+
+    if (Math.floor(performance.now()/500)%2===0) drawText('START / A で開始',160,200,'#60e060','center');
+    drawText('HIGH SCORE ' + loadHighScore(),160,220,'#ffe066','center');
+  }
+
   function drawSelect() {
     box(0,0,W,H,'#101018');
-    drawText('OJISAN SELECT',128,23,'#ffe066','center');
+    drawText('OJISAN SELECT',160,18,'#ffe066','center');
+    drawText('↑↓←→で選択　START/Aで出勤',160,34,'#d8d8d8','center');
+
+    // 左側：A〜Zのおっちゃんを小さく一覧表示
+    box(8,44,120,186,'#202838');
+    box(12,48,112,178,'#303040');
+    drawText('おっちゃん一覧',68,61,'#ffffff','center');
+
+    for (let i=0; i<ojisans.length; i++) {
+      const col = i % 4;
+      const row = Math.floor(i / 4);
+      const ox = 20 + col * 26;
+      const oy = 72 + row * 22;
+      if (i === selectedOjisan) {
+        box(ox-4, oy-5, 22, 24, '#ffe066');
+        box(ox-2, oy-3, 18, 20, '#101018');
+      }
+      drawOjisanSprite(ox, oy, ojisans[i], 0.65, 1);
+      drawText(ojisans[i].id, ox+7, oy+20, i === selectedOjisan ? '#ffe066' : '#d8d8d8', 'center');
+    }
+
+    // 右側：選択中おっちゃんの詳細ステータス
     const o = ojisans[selectedOjisan];
-    drawText('← → で選択　STARTで出勤',128,39,'#d8d8d8','center');
-    drawText('[' + o.id + '] ' + o.name,128,60,'#fff','center');
-    const px=120, py=69;
-    drawOjisanSprite(px, py, o, 2, 'select');
-    statLine('力', o.power, 48, 112); statLine('速さ', o.speed, 48, 126); statLine('技術', o.tech, 48, 140); statLine('優しさ', o.kindness, 48, 154);
-    drawText('HIGH SCORE ' + loadHighScore(),128,174,'#ffe066','center');
-    drawText('< ' + ojisans[(selectedOjisan+25)%26].id + '        ' + ojisans[(selectedOjisan+1)%26].id + ' >',128,91,'#9090ff','center');
+    box(138,44,174,186,'#202838');
+    box(142,48,166,178,'#303040');
+    drawText('選択中',225,62,'#d8d8d8','center');
+    drawText('[' + o.id + '] ' + o.name,225,80,'#ffffff','center');
+    drawOjisanSprite(214, 94, o, 2, 1);
+
+    statLine('力', o.power, 160, 156);
+    statLine('速さ', o.speed, 160, 174);
+    statLine('技術', o.tech, 160, 192);
+    statLine('優しさ', o.kindness, 160, 210);
   }
+
   function drawGameOver() {
-    drawWorld(); box(35,45,186,104,'#101018'); box(39,49,178,96,'#303040');
-    drawText('GAME OVER',128,66,'#ff7070','center'); drawText('SCORE ' + state.score,128,86,'#ffe066','center');
-    drawText(state.ojisan.name,128,101,'#fff','center'); drawText('出した台数 ' + state.served + '台 / ミス ' + state.miss,128,116,'#fff','center');
-    drawText('HIGH SCORE ' + state.highScore,128,131,'#ffe066','center');
-    const recent = loadLastScores(); if (recent[0]) drawText('前回 ' + recent[0].score,128,143,'#d8d8d8','center');
-    drawText('STARTで選択へ',128,160,'#60e060','center');
+    drawWorld(); box(48,58,224,128,'#101018'); box(52,62,216,120,'#303040');
+    drawText('GAME OVER',160,82,'#ff7070','center'); drawText('SCORE ' + state.score,160,106,'#ffe066','center');
+    drawText(state.ojisan.name,160,124,'#fff','center'); drawText('出した台数 ' + state.served + '台 / ミス ' + state.miss,160,142,'#fff','center');
+    drawText('HIGH SCORE ' + state.highScore,160,160,'#ffe066','center');
+    const recent = loadLastScores(); if (recent[0]) drawText('前回 ' + recent[0].score,160,174,'#d8d8d8','center');
+    drawText('STARTで選択へ',160,202,'#60e060','center');
+  }
+
+  function drawPause() {
+    drawWorld(); box(78,78,164,70,'#101018'); box(82,82,156,62,'#303040');
+    drawText('PAUSE',160,105,'#ffe066','center'); drawText('P / START で再開',160,128,'#60e060','center');
+  }
+
+  function runSelfTests() {
+    console.assert(clamp(5, 0, 10) === 5, 'clamp keeps middle values');
+    console.assert(clamp(-1, 0, 10) === 0, 'clamp clamps low values');
+    console.assert(clamp(99, 0, 10) === 10, 'clamp clamps high values');
+    const oldKeys = { ...keys };
+    keys.ArrowLeft = true; keys.ArrowUp = true;
+    const mv = getMoveVector();
+    console.assert(mv.vx === -1 && mv.vy === -1 && mv.moving === true, 'getMoveVector detects diagonal movement');
+    Object.keys(keys).forEach(k => delete keys[k]);
+    Object.assign(keys, oldKeys);
+    const prevMode = state.mode;
+    state.mode = 'title';
+    console.assert(state.mode === 'title', 'initial flow starts at title mode');
+    state.mode = 'play'; togglePause(); console.assert(state.mode === 'pause', 'togglePause pauses play mode');
+    togglePause(); console.assert(state.mode === 'play', 'togglePause resumes pause mode');
+    state.mode = prevMode;
+    const oldPlayer = state.player;
+    state.player = { x:156, y:70, w:14, h:20, hold:null, dir:1 };
+    console.assert(atCounter() === true, 'atCounter allows handing over at the entrance');
+    state.player = oldPlayer;
+    const staminaBefore = 100;
+    const sampleOjisan = { power: 9 };
+    const dashDrainSample = 18 + sampleOjisan.power * 1.4;
+    console.assert(dashDrainSample > 18, 'strong ojisan has heavier dash drain');
+    console.assert(staminaBefore - dashDrainSample * 0.1 < staminaBefore, 'dash drain decreases stamina');
+    const oldStamina = state.stamina;
+    const oldTension = state.tension;
+    const oldTime = state.time;
+    applyGift({ id:'taiyaki', name:'タイ焼き', stamina:10, tension:0, time:0 });
+    console.assert(state.stamina >= oldStamina, 'taiyaki recovers stamina');
+    state.stamina = oldStamina; state.tension = oldTension; state.time = oldTime;
+    applyGift({ id:'skull', name:'ドクロ', stamina:-10, tension:-10, time:0 });
+    console.assert(state.stamina <= oldStamina && state.tension <= oldTension, 'skull decreases stamina and tension');
+    state.stamina = oldStamina; state.tension = oldTension; state.time = oldTime;
+    const bonus = maybeChattyBonus({ chatty:true });
+    console.assert(bonus === null || ['clock10','musouitem'].includes(bonus.id), 'chatty bonus returns only allowed items');
+    const oldPending = state.pendingChattyBonus;
+    state.pendingChattyBonus = { id:'clock10', name:'時計+10秒', color:'#80e0ff' };
+    const oldTimeForChatBonus = state.time;
+    applyChattyBonus(state.pendingChattyBonus);
+    console.assert(state.time === oldTimeForChatBonus + 10, 'chatty clock bonus is applied after talk');
+    state.pendingChattyBonus = oldPending;
+    const oldSelected = selectedOjisan;
+    selectedOjisan = 0;
+    state.mode = 'select';
+    keys.ArrowDown = true;
+    update(0.016);
+    console.assert(selectedOjisan === 4, 'select down moves one row in the 4-column grid');
+    keys.ArrowDown = false;
+    selectLock = false;
+    keys.ArrowRight = true;
+    update(0.016);
+    console.assert(selectedOjisan === 5, 'select right moves one column in the grid');
+    keys.ArrowRight = false;
+    selectedOjisan = oldSelected;
+    state.mode = prevMode;
+    console.assert(typeof musicTick === 'function', 'musicTick is defined');
+    console.assert(typeof update === 'function' && typeof action === 'function', 'core functions are defined');
   }
 
   function loop(t) {
     pollGamepad(); const dt = Math.min(.05, (t - state.lastTime) / 1000); state.lastTime = t;
+    musicTick(dt);
     update(dt);
-    if (state.mode === 'select') drawSelect(); else if (state.mode === 'gameover') drawGameOver(); else drawWorld();
+    if (state.mode === 'title') drawTitle(); else if (state.mode === 'select') drawSelect(); else if (state.mode === 'gameover') drawGameOver(); else if (state.mode === 'pause') drawPause(); else drawWorld();
     requestAnimationFrame(loop);
   }
 
   window.addEventListener('keydown', e => { initAudio(); keys[e.key] = true; if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' ','Enter'].includes(e.key)) e.preventDefault(); });
   window.addEventListener('keyup', e => keys[e.key] = false);
   window.addEventListener('gamepadconnected', () => initAudio());
-  setupTouchControls(); requestAnimationFrame(loop);
+  window.addEventListener('pointerdown', () => initAudio());
+  setupTouchControls();
+  runSelfTests();
+  requestAnimationFrame(loop);
 })();
 </script>
 </body>
